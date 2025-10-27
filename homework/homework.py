@@ -95,3 +95,159 @@
 # {'type': 'cm_matrix', 'dataset': 'train', 'true_0': {"predicted_0": 15562, "predicte_1": 666}, 'true_1': {"predicted_0": 3333, "predicted_1": 1444}}
 # {'type': 'cm_matrix', 'dataset': 'test', 'true_0': {"predicted_0": 15562, "predicte_1": 650}, 'true_1': {"predicted_0": 2490, "predicted_1": 1420}}
 #
+
+
+import os
+import gzip
+import json
+import pickle
+import pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.decomposition import PCA
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.feature_selection import SelectKBest, f_classif, f_regression
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    balanced_accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    confusion_matrix,
+)
+from sklearn.model_selection import GridSearchCV
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, MinMaxScaler, StandardScaler
+from sklearn.svm import SVC
+
+
+
+# LIMPIEZA DE DATOS
+
+def limpiarDatos(df: pd.DataFrame):
+    df = df.copy()
+    df = df.rename(columns={"default payment next month": "default"})
+    df = df.drop(columns=["ID"])
+    df = df.dropna()
+
+    df = df[(df["EDUCATION"] != 0) & (df["MARRIAGE"] != 0)]
+
+  
+    df["EDUCATION"] = df["EDUCATION"].apply(lambda x: 4 if x >= 4 else x).astype("category")
+
+    x = df.drop(columns=["default"])
+    y = df["default"]
+
+    return df, x, y
+
+
+
+# PIPELINE
+
+def pipeline() -> Pipeline:
+    caracteristicas_cat = ["SEX", "EDUCATION", "MARRIAGE"]
+    caracteristicas_num = [
+        "LIMIT_BAL", "AGE",
+        "PAY_0", "PAY_2", "PAY_3", "PAY_4", "PAY_5", "PAY_6",
+        "BILL_AMT1", "BILL_AMT2", "BILL_AMT3", "BILL_AMT4", "BILL_AMT5", "BILL_AMT6",
+        "PAY_AMT1", "PAY_AMT2", "PAY_AMT3", "PAY_AMT4", "PAY_AMT5", "PAY_AMT6"
+    ]
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("categoria", OneHotEncoder(handle_unknown="ignore"), caracteristicas_cat),
+            ("scaler", StandardScaler(with_mean=True, with_std=True), caracteristicas_num),
+        ]
+    )
+
+    pipe = Pipeline([
+        ("preprocessor", preprocessor),
+        ("pca", PCA()),
+        ("feature_selection", SelectKBest(score_func=f_classif, k=10)),
+        ("classifier", SVC(kernel="rbf", random_state=42)),
+    ])
+
+    return pipe
+
+
+# GRID SEARCH
+
+def hiperParametros(pipeline, x, y):
+    parametros = {
+        "pca__n_components": [20, x.shape[1] - 2],
+        "feature_selection__k": [12],
+        "classifier__kernel": ["rbf"],
+        "classifier__gamma": [0.1],
+    }
+
+    gridSearch = GridSearchCV(
+        pipeline,
+        parametros,
+        cv=10,
+        scoring="balanced_accuracy",
+        n_jobs=-1,
+        verbose=2,
+        refit=True,
+    )
+
+    return gridSearch.fit(x, y)
+
+# GUARDAR MODELO
+
+def guardar(model):
+    os.makedirs("files/models", exist_ok=True)
+    with gzip.open("files/models/model.pkl.gz", "wb") as file:
+        pickle.dump(model, file)
+
+
+
+# MÉTRICAS
+
+def metricas(pipeline, x_train, y_train, x_test, y_test):
+    y_train_pred = pipeline.predict(x_train)
+    y_test_pred = pipeline.predict(x_test)
+
+    metricas_train = {
+        "type": "metrics",
+        "dataset": "train",
+        "precision": float(precision_score(y_train, y_train_pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(y_train, y_train_pred)),
+        "recall": float(recall_score(y_train, y_train_pred)),
+        "f1_score": float(f1_score(y_train, y_train_pred)),
+    }
+
+    metricas_test = {
+        "type": "metrics",
+        "dataset": "test",
+        "precision": float(precision_score(y_test, y_test_pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(y_test, y_test_pred)),
+        "recall": float(recall_score(y_test, y_test_pred)),
+        "f1_score": float(f1_score(y_test, y_test_pred)),
+    }
+
+    return metricas_train, metricas_test
+
+
+# MATRIZ DE CONFUSIÓN
+
+def matrizConfusion(pipeline, x_train, y_train, x_test, y_test):
+    y_train_pred = pipeline.predict(x_train)
+    y_test_pred = pipeline.predict(x_test)
+
+    cm_train = confusion_matrix(y_train, y_train_pred)
+    cm_test = confusion_matrix(y_test, y_test_pred)
+
+    cm_metrics_train = {
+        "type": "cm_matrix",
+        "dataset": "train",
+        "true_0": {"predicted_0": int(cm_train[0, 0]), "predicted_1": int(cm_train[0, 1])},
+        "true_1": {"predicted_0": int(cm_train[1, 0]), "predicted_1": int(cm_train[1, 1])},
+    }
+
+    cm_metrics_test = {
+        "type": "cm_matrix",
+        "dataset": "test",
+        "true_0": {"predicted_0": int(cm_test[0, 0]), "predicted_1": int(cm_test[0, 1])},
+        "true_1": {"predicted_0": int(cm_test[1, 0]), "predicted_1": int(cm_test[1, 1])},
+    }
+
+    return cm_metrics_train, cm_metrics_test
